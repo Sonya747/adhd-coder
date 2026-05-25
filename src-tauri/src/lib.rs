@@ -17,12 +17,22 @@ struct Task {
     project: String,
     summary: String,
     created_at: i64,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default = "default_status")]
+    status: String,
+}
+
+fn default_status() -> String {
+    "done".into()
 }
 
 #[derive(Default, Deserialize)]
 struct DoneReq {
     project: Option<String>,
     summary: Option<String>,
+    session_id: Option<String>,
+    status: Option<String>,
 }
 
 #[derive(Default)]
@@ -71,27 +81,67 @@ fn clear_tasks(state: State<AppState>) {
     save_tasks(&tasks);
 }
 
-fn add_task(app: &AppHandle, project: String, summary: String) {
-    let task = Task {
-        id: uuid::Uuid::new_v4().to_string(),
-        project,
-        summary,
-        created_at: chrono::Utc::now().timestamp_millis(),
-    };
+fn add_task(
+    app: &AppHandle,
+    project: String,
+    summary: Option<String>,
+    session_id: Option<String>,
+    status: String,
+) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let session_key = session_id.as_ref().filter(|s| !s.is_empty()).cloned();
 
-    let state = app.state::<AppState>();
-    {
+    let (task, notify) = {
+        let state = app.state::<AppState>();
         let mut tasks = state.tasks.lock().unwrap();
+
+        let existing_idx = session_key.as_ref().and_then(|sid| {
+            tasks
+                .iter()
+                .position(|t| t.session_id.as_deref() == Some(sid))
+        });
+
+        let (task, was_responding) = if let Some(idx) = existing_idx {
+            let mut t = tasks.remove(idx);
+            let prev_status = t.status.clone();
+            t.project = project;
+            if let Some(s) = summary {
+                t.summary = s;
+            }
+            t.status = status.clone();
+            t.created_at = now;
+            t.session_id = session_key.clone();
+            (t, prev_status == "responding")
+        } else {
+            (
+                Task {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    project,
+                    summary: summary.unwrap_or_else(|| "完成".into()),
+                    created_at: now,
+                    session_id: session_key.clone(),
+                    status: status.clone(),
+                },
+                false,
+            )
+        };
+
         tasks.insert(0, task.clone());
         save_tasks(&tasks);
-    }
 
-    let _ = app
-        .notification()
-        .builder()
-        .title(format!("✓ {}", task.project))
-        .body(&task.summary)
-        .show();
+        // 只在「响应完成」这次转换时通知，避免每次提交都打扰
+        let notify = status == "done" && was_responding;
+        (task, notify)
+    };
+
+    if notify {
+        let _ = app
+            .notification()
+            .builder()
+            .title(format!("✓ {}", task.project))
+            .body(&task.summary)
+            .show();
+    }
 
     let _ = app.emit("task-added", &task);
 }
@@ -116,8 +166,8 @@ fn start_http_server(app: AppHandle) {
                 let _ = req.as_reader().read_to_string(&mut body);
                 let parsed: DoneReq = serde_json::from_str(&body).unwrap_or_default();
                 let project = parsed.project.unwrap_or_else(|| "task".into());
-                let summary = parsed.summary.unwrap_or_else(|| "完成".into());
-                add_task(&app, project, summary);
+                let status = parsed.status.unwrap_or_else(|| "done".into());
+                add_task(&app, project, parsed.summary, parsed.session_id, status);
 
                 let resp = Response::from_string(r#"{"ok":true}"#)
                     .with_header(json_header());

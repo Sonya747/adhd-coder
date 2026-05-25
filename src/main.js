@@ -31,8 +31,10 @@ function render(tasks) {
     const li = document.createElement("li");
     li.className = "item";
     li.dataset.id = t.id;
+    const status = t.status === "responding" ? "responding" : "done";
+    li.classList.add(`status-${status}`);
     li.innerHTML = `
-      <div class="check"></div>
+      <div class="status-icon ${status}">${status === "done" ? "✓" : ""}</div>
       <div class="body">
         <div class="proj">${escapeHtml(t.project || "task")}</div>
         <div class="summary">${escapeHtml(t.summary || "完成")}</div>
