@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ADHD Coder</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="drag" data-tauri-drag-region>
+        <span class="brand">🧠 ADHD</span>
+        <span class="count" id="count">0</span>
+      </div>
+      <button class="icon" id="clear" title="全部清除">✕</button>
+      <button class="icon" id="hide" title="隐藏窗口">—</button>
+    </header>
+    <ul id="list" class="list">
+      <li class="empty">等待任务完成…</li>
+    </ul>
+    <div class="resize-handle" id="resize" title="拖拽调整大小"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

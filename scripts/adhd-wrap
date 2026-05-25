@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# 包裹任意 CLI，进程结束后向 ADHD Coder 上报
+# 用法: adhd-wrap codex ...
+#       adhd-wrap --project myproj --summary "构建完成" -- npm run build
+
+ADHD_URL="${ADHD_URL:-http://127.0.0.1:7777/done}"
+PROJECT="$(basename "$PWD")"
+SUMMARY=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="$2"; shift 2 ;;
+    --summary) SUMMARY="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: adhd-wrap [--project P] [--summary S] [--] <command> [args...]" >&2
+  exit 2
+fi
+
+CMD_NAME="$1"
+[[ -z "$SUMMARY" ]] && SUMMARY="$CMD_NAME 已完成"
+
+"$@"
+STATUS=$?
+
+if [[ $STATUS -eq 0 ]]; then
+  RESULT="$SUMMARY"
+else
+  RESULT="$SUMMARY (exit $STATUS)"
+fi
+
+curl -s -X POST "$ADHD_URL" \
+  -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$PROJECT\",\"summary\":\"$RESULT\"}" >/dev/null || true
+
+exit $STATUS

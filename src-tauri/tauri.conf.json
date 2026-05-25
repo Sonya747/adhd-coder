@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ADHD Coder",
+  "version": "0.1.0",
+  "identifier": "dev.adhd.coder",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "ADHD Coder",
+        "width": 280,
+        "height": 360,
+        "minWidth": 220,
+        "minHeight": 200,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "resizable": true,
+        "skipTaskbar": false,
+        "shadow": true,
+        "x": 1200,
+        "y": 80
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "plugins": {},
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"],
+    "category": "DeveloperTool"
+  }
+}
