@@ -32,7 +32,9 @@ function render(tasks) {
     li.className = "item";
     li.dataset.id = t.id;
     const status = t.status === "responding" ? "responding" : "done";
+    const viewed = !!t.viewed && status === "done";
     li.classList.add(`status-${status}`);
+    if (viewed) li.classList.add("viewed");
     li.innerHTML = `
       <div class="status-icon ${status}">${status === "done" ? "✓" : ""}</div>
       <div class="body">
@@ -40,8 +42,13 @@ function render(tasks) {
         <div class="summary">${escapeHtml(t.summary || "完成")}</div>
         <div class="time">${fmtTime(t.created_at)}</div>
       </div>
+      <button class="row-x" title="删除">×</button>
     `;
-    li.addEventListener("click", () => acknowledge(t.id, li));
+    li.addEventListener("click", () => focusTask(t.id));
+    li.querySelector(".row-x").addEventListener("click", (e) => {
+      e.stopPropagation();
+      acknowledge(t.id, li);
+    });
     listEl.appendChild(li);
   }
 }
@@ -58,6 +65,11 @@ async function acknowledge(id, li) {
     await invoke("ack_task", { id });
     refresh();
   }, 160);
+}
+
+async function focusTask(id) {
+  await invoke("focus_task", { id });
+  refresh();
 }
 
 async function refresh() {

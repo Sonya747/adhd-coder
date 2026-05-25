@@ -8,6 +8,7 @@
 
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 
@@ -65,6 +66,48 @@ def truncate(text):
     return text[: MAX_LEN - 1] + "…"
 
 
+def detect_vscode_family():
+    """区分 Cursor / VSCode：两者 TERM_PROGRAM 都可能是 'vscode'，但环境变量里的安装路径不同。"""
+    candidates = [
+        os.environ.get("VSCODE_GIT_ASKPASS_NODE", ""),
+        os.environ.get("VSCODE_GIT_ASKPASS_MAIN", ""),
+        os.environ.get("VSCODE_IPC_HOOK_CLI", ""),
+        os.environ.get("__CFBundleIdentifier", ""),
+    ]
+    blob = " ".join(candidates)
+    if "Cursor" in blob or "cursor" in blob:
+        return "cursor"
+    if "Visual Studio Code" in blob or "/Code.app" in blob or "code" in blob.lower():
+        return "vscode"
+    return ""
+
+
+def terminal_info():
+    tmux_env = os.environ.get("TMUX") or ""
+    tmux_socket = tmux_env.split(",", 1)[0] if tmux_env else ""
+    program = os.environ.get("TERM_PROGRAM") or ""
+    if program == "vscode":
+        program = detect_vscode_family() or "vscode"
+    info = {
+        "program": program,
+        "iterm_session": os.environ.get("ITERM_SESSION_ID") or "",
+        "term_session": os.environ.get("TERM_SESSION_ID") or "",
+        "tmux_pane": os.environ.get("TMUX_PANE") or "",
+        "tmux_socket": tmux_socket,
+        "tty": "",
+    }
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "tty=", "-p", str(os.getpid())],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if out and out != "??":
+            info["tty"] = out if out.startswith("/dev/") else "/dev/" + out
+    except Exception:
+        pass
+    return info
+
+
 def post(body):
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -90,7 +133,7 @@ def main():
     cwd = payload.get("cwd") or os.getcwd()
     project = os.path.basename(cwd.rstrip("/")) or "task"
 
-    body = {"project": project, "session_id": session_id}
+    body = {"project": project, "session_id": session_id, "terminal": terminal_info()}
 
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt") or ""

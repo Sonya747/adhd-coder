@@ -119,6 +119,33 @@ body {
 .item.status-responding .summary { color: #a8a8ad; }
 .item.status-responding .proj { color: #ffd60a; }
 
+.item.viewed { opacity: 0.55; }
+.item.viewed .status-icon.done {
+  color: #6b6b70;
+  border-color: #4a4a4e;
+  background: transparent;
+}
+.item.viewed .proj { color: #6b6b70; }
+
+.row-x {
+  align-self: flex-start;
+  margin-top: 1px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: #6b6b70;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+  flex-shrink: 0;
+}
+.item:hover .row-x { opacity: 1; }
+.row-x:hover { background: rgba(255, 69, 58, 0.18); color: #ff453a; }
+
 .item .body { flex: 1; min-width: 0; }
 .item .proj {
   font-size: 11px;

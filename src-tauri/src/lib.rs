@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use tauri::menu::{Menu, MenuItem};
@@ -10,6 +11,22 @@ use tauri_plugin_notification::NotificationExt;
 use tiny_http::{Header, Method, Response, Server};
 
 const PORT: u16 = 7777;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct TerminalRef {
+    #[serde(default)]
+    program: String,
+    #[serde(default)]
+    iterm_session: String,
+    #[serde(default)]
+    term_session: String,
+    #[serde(default)]
+    tmux_pane: String,
+    #[serde(default)]
+    tmux_socket: String,
+    #[serde(default)]
+    tty: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Task {
@@ -21,6 +38,10 @@ struct Task {
     session_id: Option<String>,
     #[serde(default = "default_status")]
     status: String,
+    #[serde(default)]
+    viewed: bool,
+    #[serde(default)]
+    terminal: Option<TerminalRef>,
 }
 
 fn default_status() -> String {
@@ -33,6 +54,7 @@ struct DoneReq {
     summary: Option<String>,
     session_id: Option<String>,
     status: Option<String>,
+    terminal: Option<TerminalRef>,
 }
 
 #[derive(Default)]
@@ -81,12 +103,154 @@ fn clear_tasks(state: State<AppState>) {
     save_tasks(&tasks);
 }
 
+#[tauri::command]
+fn focus_task(id: String, state: State<AppState>) -> bool {
+    let (terminal, project) = {
+        let mut tasks = state.tasks.lock().unwrap();
+        let found = tasks
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| (t.terminal.clone(), t.project.clone()));
+        for t in tasks.iter_mut() {
+            if t.id == id {
+                t.viewed = true;
+            }
+        }
+        save_tasks(&tasks);
+        match found {
+            Some((term, proj)) => (term, proj),
+            None => return false,
+        }
+    };
+
+    if let Some(t) = terminal {
+        return run_focus_script(&t, &project);
+    }
+    false
+}
+
+fn applescript_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn focus_vscode_like(app_name: &str, project: &str) -> bool {
+    let app = applescript_str(app_name);
+    let proj = applescript_str(project);
+    let script = format!(
+        r#"tell application "{app}" to activate
+delay 0.1
+tell application "System Events"
+  tell process "{app}"
+    try
+      set theWin to first window whose title contains "{proj}"
+      perform action "AXRaise" of theWin
+      set frontmost to true
+    end try
+  end tell
+end tell"#,
+        app = app,
+        proj = proj
+    );
+    Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn run_focus_script(t: &TerminalRef, project: &str) -> bool {
+    // 1) 如果在 tmux 内：先切到目标 pane（同时会切到所在 window）
+    if !t.tmux_pane.is_empty() {
+        let mut cmd = Command::new("tmux");
+        if !t.tmux_socket.is_empty() {
+            cmd.arg("-S").arg(&t.tmux_socket);
+        }
+        let _ = cmd
+            .args(["select-window", "-t", &t.tmux_pane])
+            .status();
+        let mut cmd = Command::new("tmux");
+        if !t.tmux_socket.is_empty() {
+            cmd.arg("-S").arg(&t.tmux_socket);
+        }
+        let _ = cmd
+            .args(["select-pane", "-t", &t.tmux_pane])
+            .status();
+    }
+
+    // 2) 再激活承载终端的 macOS app（iTerm 的话会选中具体 session/split）
+    let script = match t.program.as_str() {
+        "iTerm.app" => {
+            let uuid = t
+                .iterm_session
+                .rsplit(':')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if uuid.is_empty() {
+                return false;
+            }
+            format!(
+                r#"tell application "iTerm2"
+  activate
+  set target to "{uuid}"
+  repeat with w in windows
+    repeat with tb in tabs of w
+      repeat with s in sessions of tb
+        if unique id of s is target then
+          select w
+          select tb
+          select s
+          return
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell"#,
+                uuid = uuid
+            )
+        }
+        "Apple_Terminal" => {
+            if t.tty.is_empty() {
+                return false;
+            }
+            format!(
+                r#"tell application "Terminal"
+  activate
+  set target to "{tty}"
+  repeat with w in windows
+    repeat with tb in tabs of w
+      if tty of tb is target then
+        set selected tab of w to tb
+        set frontmost of w to true
+        return
+      end if
+    end repeat
+  end repeat
+end tell"#,
+                tty = t.tty
+            )
+        }
+        "vscode" => return focus_vscode_like("Code", project),
+        "cursor" => return focus_vscode_like("Cursor", project),
+        _ => return !t.tmux_pane.is_empty(),
+    };
+
+    Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn add_task(
     app: &AppHandle,
     project: String,
     summary: Option<String>,
     session_id: Option<String>,
     status: String,
+    terminal: Option<TerminalRef>,
 ) {
     let now = chrono::Utc::now().timestamp_millis();
     let session_key = session_id.as_ref().filter(|s| !s.is_empty()).cloned();
@@ -111,6 +275,11 @@ fn add_task(
             t.status = status.clone();
             t.created_at = now;
             t.session_id = session_key.clone();
+            if terminal.is_some() {
+                t.terminal = terminal;
+            }
+            // 新一轮活动 → 重置已查看标记，重新需要关注
+            t.viewed = false;
             (t, prev_status == "responding")
         } else {
             (
@@ -121,6 +290,8 @@ fn add_task(
                     created_at: now,
                     session_id: session_key.clone(),
                     status: status.clone(),
+                    viewed: false,
+                    terminal,
                 },
                 false,
             )
@@ -129,7 +300,6 @@ fn add_task(
         tasks.insert(0, task.clone());
         save_tasks(&tasks);
 
-        // 只在「响应完成」这次转换时通知，避免每次提交都打扰
         let notify = status == "done" && was_responding;
         (task, notify)
     };
@@ -167,7 +337,14 @@ fn start_http_server(app: AppHandle) {
                 let parsed: DoneReq = serde_json::from_str(&body).unwrap_or_default();
                 let project = parsed.project.unwrap_or_else(|| "task".into());
                 let status = parsed.status.unwrap_or_else(|| "done".into());
-                add_task(&app, project, parsed.summary, parsed.session_id, status);
+                add_task(
+                    &app,
+                    project,
+                    parsed.summary,
+                    parsed.session_id,
+                    status,
+                    parsed.terminal,
+                );
 
                 let resp = Response::from_string(r#"{"ok":true}"#)
                     .with_header(json_header());
@@ -250,7 +427,12 @@ pub fn run() {
         .manage(AppState {
             tasks: Mutex::new(initial),
         })
-        .invoke_handler(tauri::generate_handler![list_tasks, ack_task, clear_tasks])
+        .invoke_handler(tauri::generate_handler![
+            list_tasks,
+            ack_task,
+            clear_tasks,
+            focus_task
+        ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
