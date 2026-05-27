@@ -7,6 +7,10 @@ const countEl = document.getElementById("count");
 const clearBtn = document.getElementById("clear");
 const hideBtn = document.getElementById("hide");
 const resizeEl = document.getElementById("resize");
+const brandEl = document.getElementById("brand");
+const portBadge = document.getElementById("port-badge");
+
+const DEFAULT_PORT = 7777;
 
 function fmtTime(ts) {
   const d = new Date(ts);
@@ -91,6 +95,28 @@ resizeEl.addEventListener("mousedown", (e) => {
   getCurrentWindow().startResizeDragging("SouthEast");
 });
 
+async function refreshPort() {
+  const port = await invoke("get_port");
+  if (!port) {
+    brandEl.title = "未监听（端口全部被占）";
+    portBadge.hidden = false;
+    portBadge.textContent = "× port";
+    portBadge.classList.add("err");
+    return;
+  }
+  brandEl.title = `监听 127.0.0.1:${port}`;
+  if (port === DEFAULT_PORT) {
+    portBadge.hidden = true;
+    portBadge.classList.remove("err");
+  } else {
+    portBadge.hidden = false;
+    portBadge.classList.remove("err");
+    portBadge.textContent = `:${port}`;
+  }
+}
+
 listen("task-added", () => refresh());
+listen("port-changed", () => refreshPort());
 
 refresh();
+refreshPort();

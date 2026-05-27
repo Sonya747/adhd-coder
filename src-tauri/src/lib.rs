@@ -1,16 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 use tiny_http::{Header, Method, Response, Server};
 
-const PORT: u16 = 7777;
+const PORTS: &[u16] = &[7777, 7778, 7779, 7780];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct TerminalRef {
@@ -60,13 +62,25 @@ struct DoneReq {
 #[derive(Default)]
 struct AppState {
     tasks: Mutex<Vec<Task>>,
+    port: Mutex<Option<u16>>,
 }
 
-fn store_path() -> PathBuf {
+fn data_dir() -> PathBuf {
     let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     p.push(".adhd-coder");
     let _ = fs::create_dir_all(&p);
+    p
+}
+
+fn store_path() -> PathBuf {
+    let mut p = data_dir();
     p.push("tasks.json");
+    p
+}
+
+fn port_file() -> PathBuf {
+    let mut p = data_dir();
+    p.push("port");
     p
 }
 
@@ -94,6 +108,11 @@ fn ack_task(id: String, state: State<AppState>) {
     let mut tasks = state.tasks.lock().unwrap();
     tasks.retain(|t| t.id != id);
     save_tasks(&tasks);
+}
+
+#[tauri::command]
+fn get_port(state: State<AppState>) -> Option<u16> {
+    *state.port.lock().unwrap()
 }
 
 #[tauri::command]
@@ -316,16 +335,47 @@ fn add_task(
     let _ = app.emit("task-added", &task);
 }
 
+fn port_in_use(port: u16) -> bool {
+    // macOS 上 IPv6 dual-stack(*:port) 与 IPv4(127.0.0.1:port) 可共存绑定,
+    // 仅靠 bind 失败检测不到外部冲突,因此先 connect 探测。
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    match TcpStream::connect_timeout(&addr, Duration::from_millis(150)) {
+        Ok(s) => {
+            let _ = s.shutdown(Shutdown::Both);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn start_http_server(app: AppHandle) {
     thread::spawn(move || {
-        let server = match Server::http(format!("127.0.0.1:{}", PORT)) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[adhd] HTTP server failed to start on :{PORT}: {e}");
+        let mut bound: Option<(u16, Server)> = None;
+        for &p in PORTS {
+            if port_in_use(p) {
+                eprintln!("[adhd] :{p} already serving, trying next");
+                continue;
+            }
+            match Server::http(format!("127.0.0.1:{}", p)) {
+                Ok(s) => {
+                    bound = Some((p, s));
+                    break;
+                }
+                Err(e) => eprintln!("[adhd] :{p} bind failed ({e}), trying next"),
+            }
+        }
+        let (port, server) = match bound {
+            Some(v) => v,
+            None => {
+                eprintln!("[adhd] all candidate ports busy: {:?}", PORTS);
                 return;
             }
         };
-        eprintln!("[adhd] listening on http://127.0.0.1:{PORT}/done");
+
+        *app.state::<AppState>().port.lock().unwrap() = Some(port);
+        let _ = fs::write(port_file(), port.to_string());
+        let _ = app.emit("port-changed", port);
+        eprintln!("[adhd] listening on http://127.0.0.1:{port}/done");
 
         for mut req in server.incoming_requests() {
             let path = req.url().to_string();
@@ -426,12 +476,14 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(AppState {
             tasks: Mutex::new(initial),
+            port: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             list_tasks,
             ack_task,
             clear_tasks,
-            focus_task
+            focus_task,
+            get_port
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

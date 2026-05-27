@@ -3,7 +3,10 @@
 # 用法: adhd-wrap codex ...
 #       adhd-wrap --project myproj --summary "构建完成" -- npm run build
 
-ADHD_URL="${ADHD_URL:-http://127.0.0.1:7777/done}"
+PORT_FILE="$HOME/.adhd-coder/port"
+PORT=7777
+[ -f "$PORT_FILE" ] && PORT="$(cat "$PORT_FILE" 2>/dev/null || echo 7777)"
+ADHD_URL="${ADHD_URL:-http://127.0.0.1:$PORT/done}"
 PROJECT="$(basename "$PWD")"
 SUMMARY=""
 

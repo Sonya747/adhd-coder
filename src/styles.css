@@ -40,6 +40,15 @@ body {
 .drag:active { cursor: grabbing; }
 
 .brand { font-weight: 600; font-size: 12px; opacity: 0.9; }
+.port-badge {
+  font-size: 10px;
+  color: #ffd60a;
+  background: rgba(255, 214, 10, 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+}
+.port-badge.err { color: #ff453a; background: rgba(255, 69, 58, 0.15); }
 .count {
   background: #ff453a;
   color: white;

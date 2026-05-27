@@ -12,8 +12,24 @@ import subprocess
 import sys
 import urllib.request
 
-ENDPOINT = os.environ.get("ADHD_URL", "http://127.0.0.1:7777/done")
+DEFAULT_PORT = 7777
 MAX_LEN = 80
+
+
+def resolve_endpoint():
+    override = os.environ.get("ADHD_URL")
+    if override:
+        return override
+    port = DEFAULT_PORT
+    try:
+        with open(os.path.expanduser("~/.adhd-coder/port"), "r") as f:
+            port = int(f.read().strip()) or DEFAULT_PORT
+    except Exception:
+        pass
+    return f"http://127.0.0.1:{port}/done"
+
+
+ENDPOINT = resolve_endpoint()
 
 
 def extract_user_text(event):
