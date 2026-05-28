@@ -14,6 +14,8 @@ use tiny_http::{Header, Method, Response, Server};
 
 const PORTS: &[u16] = &[7777, 7778, 7779, 7780];
 
+const REPORTER_PY: &[u8] = include_bytes!("../../scripts/adhd-report.py");
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct TerminalRef {
     #[serde(default)]
@@ -84,6 +86,64 @@ fn port_file() -> PathBuf {
     p
 }
 
+fn reporter_path() -> PathBuf {
+    let mut p = data_dir();
+    p.push("report.py");
+    p
+}
+
+fn installed_flag_path() -> PathBuf {
+    let mut p = data_dir();
+    p.push(".installed");
+    p
+}
+
+fn claude_settings_path() -> PathBuf {
+    let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    p.push(".claude");
+    p.push("settings.json");
+    p
+}
+
+fn is_our_hook(cmd: &str) -> bool {
+    cmd.contains("/.adhd-coder/report.py") || cmd.contains("127.0.0.1:7777/done")
+}
+
+fn upsert_event(
+    hooks_obj: &mut serde_json::Map<String, serde_json::Value>,
+    event: &str,
+    cmd: &str,
+) {
+    use serde_json::{json, Value};
+
+    let prev = match hooks_obj.get_mut(event) {
+        Some(Value::Array(a)) => std::mem::take(a),
+        _ => Vec::new(),
+    };
+
+    let mut cleaned: Vec<Value> = prev
+        .into_iter()
+        .filter_map(|mut entry| {
+            let inner = entry.get_mut("hooks").and_then(|h| h.as_array_mut())?;
+            inner.retain(|x| {
+                let c = x.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                !is_our_hook(c)
+            });
+            if inner.is_empty() {
+                None
+            } else {
+                Some(entry)
+            }
+        })
+        .collect();
+
+    cleaned.push(json!({
+        "hooks": [{ "type": "command", "command": cmd }]
+    }));
+
+    hooks_obj.insert(event.to_string(), Value::Array(cleaned));
+}
+
 fn load_tasks() -> Vec<Task> {
     let p = store_path();
     fs::read_to_string(&p)
@@ -113,6 +173,132 @@ fn ack_task(id: String, state: State<AppState>) {
 #[tauri::command]
 fn get_port(state: State<AppState>) -> Option<u16> {
     *state.port.lock().unwrap()
+}
+
+#[derive(Serialize)]
+struct InstallStatus {
+    installed: bool,
+    version: Option<String>,
+    installed_at: Option<i64>,
+}
+
+#[tauri::command]
+fn get_install_status() -> InstallStatus {
+    let raw = match fs::read_to_string(installed_flag_path()) {
+        Ok(s) => s,
+        Err(_) => {
+            return InstallStatus {
+                installed: false,
+                version: None,
+                installed_at: None,
+            }
+        }
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    InstallStatus {
+        installed: true,
+        version: parsed
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        installed_at: parsed.get("installed_at").and_then(|v| v.as_i64()),
+    }
+}
+
+#[tauri::command]
+fn mark_installed() -> Result<PathBuf, String> {
+    let p = installed_flag_path();
+    let body = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "installed_at": chrono::Utc::now().timestamp_millis(),
+    });
+    fs::write(&p, serde_json::to_string_pretty(&body).unwrap())
+        .map_err(|e| format!("write {}: {}", p.display(), e))?;
+    Ok(p)
+}
+
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .status()
+        .map_err(|e| format!("open accessibility settings: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reset_install() -> Result<(), String> {
+    let p = installed_flag_path();
+    match fs::remove_file(&p) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove {}: {}", p.display(), e)),
+    }
+}
+
+#[tauri::command]
+fn install_claude_hook() -> Result<PathBuf, String> {
+    use serde_json::{json, Value};
+
+    let settings = claude_settings_path();
+    let dir = settings.parent().ok_or("settings has no parent")?;
+    fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+
+    let raw = fs::read_to_string(&settings).unwrap_or_else(|_| "{}".into());
+
+    if settings.exists() {
+        let ts = chrono::Utc::now().timestamp();
+        let bak = dir.join(format!("settings.json.bak.{}", ts));
+        fs::copy(&settings, &bak)
+            .map_err(|e| format!("backup {}: {}", bak.display(), e))?;
+    }
+
+    let trimmed = raw.trim();
+    let mut cfg: Value = if trimmed.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(trimmed).map_err(|e| format!("parse settings.json: {}", e))?
+    };
+    if !cfg.is_object() {
+        cfg = json!({});
+    }
+
+    let obj = cfg.as_object_mut().unwrap();
+    let hooks = obj.entry("hooks".to_string()).or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        *hooks = json!({});
+    }
+    let hooks_obj = hooks.as_object_mut().unwrap();
+
+    let cmd = format!("python3 \"{}\"", reporter_path().display());
+    upsert_event(hooks_obj, "UserPromptSubmit", &cmd);
+    upsert_event(hooks_obj, "Stop", &cmd);
+
+    let out = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| format!("serialize settings: {}", e))?;
+    fs::write(&settings, out).map_err(|e| format!("write {}: {}", settings.display(), e))?;
+
+    Ok(settings)
+}
+
+#[tauri::command]
+fn install_reporter() -> Result<PathBuf, String> {
+    let dst = reporter_path();
+    fs::write(&dst, REPORTER_PY)
+        .map_err(|e| format!("write {}: {}", dst.display(), e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dst)
+            .map_err(|e| format!("stat {}: {}", dst.display(), e))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dst, perms)
+            .map_err(|e| format!("chmod {}: {}", dst.display(), e))?;
+    }
+
+    Ok(dst)
 }
 
 #[tauri::command]
@@ -483,7 +669,13 @@ pub fn run() {
             ack_task,
             clear_tasks,
             focus_task,
-            get_port
+            get_port,
+            install_reporter,
+            install_claude_hook,
+            get_install_status,
+            mark_installed,
+            reset_install,
+            open_accessibility_settings
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -508,4 +700,72 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn run_upsert(mut cfg: Value, cmd: &str) -> Value {
+        let obj = cfg.as_object_mut().unwrap();
+        let hooks = obj.entry("hooks".to_string()).or_insert_with(|| json!({}));
+        let hooks_obj = hooks.as_object_mut().unwrap();
+        upsert_event(hooks_obj, "Stop", cmd);
+        cfg
+    }
+
+    #[test]
+    fn upsert_into_empty_config() {
+        let out = run_upsert(json!({}), "python3 \"/x/.adhd-coder/report.py\"");
+        assert_eq!(
+            out["hooks"]["Stop"],
+            json!([{
+                "hooks": [{ "type": "command", "command": "python3 \"/x/.adhd-coder/report.py\"" }]
+            }])
+        );
+    }
+
+    #[test]
+    fn upsert_preserves_other_hooks() {
+        let input = json!({
+            "hooks": {
+                "Stop": [{ "hooks": [{ "type": "command", "command": "echo hi" }] }]
+            }
+        });
+        let out = run_upsert(input, "python3 \"/x/.adhd-coder/report.py\"");
+        let stop = out["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0]["hooks"][0]["command"], "echo hi");
+        assert_eq!(
+            stop[1]["hooks"][0]["command"],
+            "python3 \"/x/.adhd-coder/report.py\""
+        );
+    }
+
+    #[test]
+    fn upsert_replaces_old_version_in_place() {
+        let input = json!({
+            "hooks": {
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "echo hi" }] },
+                    { "hooks": [{ "type": "command", "command": "curl 127.0.0.1:7777/done" }] },
+                    { "hooks": [
+                        { "type": "command", "command": "python3 \"/Users/old/.adhd-coder/report.py\"" },
+                        { "type": "command", "command": "echo also" }
+                    ]}
+                ]
+            }
+        });
+        let out = run_upsert(input, "python3 \"/x/.adhd-coder/report.py\"");
+        let stop = out["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 3, "old curl entry should drop, mixed entry kept with one cmd, new appended");
+        assert_eq!(stop[0]["hooks"][0]["command"], "echo hi");
+        assert_eq!(stop[1]["hooks"].as_array().unwrap().len(), 1);
+        assert_eq!(stop[1]["hooks"][0]["command"], "echo also");
+        assert_eq!(
+            stop[2]["hooks"][0]["command"],
+            "python3 \"/x/.adhd-coder/report.py\""
+        );
+    }
 }

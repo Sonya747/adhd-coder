@@ -31,15 +31,107 @@
 
 **问题**：现在新用户要手动跑 `bash scripts/install-claude-hook.sh`，DMG 用户根本看不到这个脚本。
 
-**改动**：
-- 内置一份 `report.py` 和 install 逻辑到 Rust 二进制里（资源文件嵌入）
-- 首次启动检测 `~/.adhd-coder/.installed` 不存在 → 弹引导窗口：
-  - 步骤 1：「安装 Claude Code hook」按钮 → 调用 Tauri 命令把内嵌的 `report.py` 写到 `~/.adhd-coder/`，并修改 `~/.claude/settings.json`
-  - 步骤 2：「授权辅助功能」按钮 → `osascript` 打开「系统设置 → 隐私与安全性 → 辅助功能」
-  - 步骤 3：「完成」→ 写入 `.installed` flag
-- 引导窗口可重新打开：托盘菜单加「重新运行引导」
+**整体目标**：把 `install-claude-hook.sh` 的全部行为内化进 Rust 二进制，DMG 用户开盖即用。下面 8 个子项按依赖顺序排列，每个可独立 commit、独立验收。
 
-**验收**：删掉 `~/.adhd-coder/.installed` 和 `~/.claude/settings.json` 的 Stop hook，重启 app，引导窗口出现，走完一遍后 hook 生效。
+依赖关系（→ 表示「依赖于」）：
+```
+M2.2.1 嵌入 reporter    ┐
+M2.2.2 改 settings.json ┴→ M2.2.4 引导 UI ┐
+M2.2.3 .installed flag                    ├→ M2.2.6 启动流程接线 → M2.2.7 托盘菜单 → M2.2.8 端到端验收
+M2.2.5 辅助功能跳转                       ┘
+```
+
+---
+
+#### M2.2.1 · 把 adhd-report.py 作为资源嵌入 + `install_reporter` 命令
+
+**改动**：
+- `tauri.conf.json` 的 `bundle.resources` 把 `../scripts/adhd-report.py` 列入
+- Rust 新增 `#[tauri::command] install_reporter() -> Result<PathBuf, String>`：用 `path_resolver().resolve_resource(...)` 读出捆绑的 py，写到 `~/.adhd-coder/report.py` 并 `chmod 0o755`
+- 同名文件存在时直接覆盖（hook 路径不变）
+
+**验收**：`rm ~/.adhd-coder/report.py`，DevTools 里 `invoke('install_reporter')` 后文件出现、可执行、内容与 `scripts/adhd-report.py` 一致。
+
+---
+
+#### M2.2.2 · `install_claude_hook` 命令（替换掉 shell + node 那套）
+
+**改动**：
+- Rust 新增 `install_claude_hook() -> Result<(), String>`：
+  - 读 `~/.claude/settings.json`（不存在则视为 `{}`）
+  - 先 `cp settings.json settings.json.bak.{timestamp}`
+  - 用 `serde_json::Value` 在 `hooks.UserPromptSubmit` 与 `hooks.Stop` 数组里 upsert 一条 `{ hooks: [{ type: "command", command: "python3 \"$HOME/.adhd-coder/report.py\"" }] }`
+  - 去重判据沿用 shell 版：command 含 `/.adhd-coder/report.py` 或老的 `127.0.0.1:7777/done` 字符串
+- 把判据和 upsert 抽成纯函数，方便后续加单测
+
+**验收**：三种 settings.json 初态——空文件 / 有别人的 hook / 有旧版我们的 hook——执行后 Claude Code 真能跑通；并且没把别人的 hook 误删。
+
+---
+
+#### M2.2.3 · `.installed` flag + `get_install_status` 命令
+
+**改动**：
+- 定义 `~/.adhd-coder/.installed` 为 JSON：`{ version: "0.2.0", installed_at: <ms> }`
+- Rust 命令：`get_install_status() -> { installed: bool, version: Option<String> }`、`mark_installed()`、`reset_install()`（给 M2.2.7 用）
+
+**验收**：手动写一个 `.installed` 文件，前端 `invoke('get_install_status')` 拿到正确结果；`reset_install` 后文件消失。
+
+---
+
+#### M2.2.4 · 引导窗口前端（onboarding.html / onboarding.js）
+
+**改动**：
+- 新增 `src/onboarding.html` + `src/onboarding.js`，三步纯静态布局：
+  - 步骤 1「安装 Claude Code hook」按钮 → `invoke('install_reporter')` + `invoke('install_claude_hook')`，成功打勾、失败展示 error
+  - 步骤 2「授权辅助功能」按钮 → `invoke('open_accessibility_settings')`（在 M2.2.5 实现）
+  - 步骤 3「完成」按钮 → `invoke('mark_installed')`，关闭引导窗、显示主窗
+- 与主窗一致的视觉：透明背景、frosted、关闭按钮
+- 不依赖 React/Vue，沿用 vanilla JS（与 CLAUDE.md 的约束一致）
+
+**验收**：单独打开 `onboarding.html`（开发期通过 URL hash 或临时 menu 项触发）可点完三步，每步状态正确反映。
+
+---
+
+#### M2.2.5 · `open_accessibility_settings` 命令
+
+**改动**：
+- Rust 命令 `open_accessibility_settings()` 执行 `open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"`
+- 不等待用户实际授权（无法可靠检测，不阻塞流程）
+
+**验收**：调用后系统设置自动打开到「辅助功能」面板。
+
+---
+
+#### M2.2.6 · 第二窗口配置 + 启动流程接线
+
+**改动**：
+- `tauri.conf.json` 增加 onboarding 窗口（`visible: false`、`width: 480`、`decorations: false`、`transparent: true`）
+- Rust `setup` 阶段：先读 `get_install_status`，未安装则 `show()` onboarding 窗、`hide()` 主窗；已安装走原路径
+- 引导窗 close 走 `hide` 而非 destroy（与主窗一致），便于 M2.2.7 重新打开
+
+**验收**：清掉 `~/.adhd-coder/.installed`，重启 app，看到引导窗而不是主窗；走完三步后主窗出现、引导窗消失。
+
+---
+
+#### M2.2.7 · 托盘菜单「重新运行引导」
+
+**改动**：
+- `build_tray` 加菜单项 `rerun_onboarding`
+- 点击：`reset_install()` + show 引导窗 + hide 主窗
+- 顺手把现有 `显示窗口 / 隐藏窗口 / 退出` 与新项的分隔线加上
+
+**验收**：托盘点「重新运行引导」，主窗消失、引导窗弹出。
+
+---
+
+#### M2.2.8 · 端到端验收 + 文档同步
+
+**操作**：
+- `rm ~/.adhd-coder/.installed`，并把 `~/.claude/settings.json` 里我们的 Stop / UserPromptSubmit hook 手动删掉
+- `npm run start` → 引导窗弹出 → 点完三步 → 在终端开一次 Claude Code → 窗口收到任务
+- 同步文档：README「下一步」里把首启引导划掉；`scripts/install-claude-hook.sh` 在头部加注释「DMG 用户无需运行，仅供开发者重置 hook 使用」
+
+**验收**：以上流程全跑通；新装一次 + 托盘「重新运行引导」一次，两条路径都 OK。
 
 ### M2.3 · 图标 / Dock 名称收尾
 
