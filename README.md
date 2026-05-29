@@ -6,6 +6,17 @@
 
 ## 功能
 
+### 功能概述
+
+- **统一收件箱**：把分散在 Claude Code / Codex CLI / 自定义脚本里的「跑完了」事件汇总到一个置顶悬浮窗
+- **三态可视化**：转圈（响应中）/ 亮绿（完成未看）/ 暗灰（已看），扫一眼就知道哪个该理
+- **点击即跳**：iTerm2 / Terminal 精准到 split/tab，tmux 自动切 pane，VSCode / Cursor 按项目名抬窗
+- **首启引导**：开盖即用,自动写 hook + 引导授权辅助功能,无需手敲脚本
+- **端口冲突自动回退**：7777 被占时按序尝试 7778-7780,UI 与 reporter 自动跟进
+- **会话去重**：同一 session 多轮活动复用同一行,不同 session 各占一行
+- **持久化**：任务列表存 `~/.adhd-coder/tasks.json`，重启不丢
+- **轻量**：Tauri 打包 ~5MB，纯 JS 前端无框架
+
 ### 任务三态
 
 | 图标 | 状态 | 含义 |
@@ -77,15 +88,17 @@ npm run tauri build
 
 ### Claude Code（CLI / IDE 插件 / Cursor）
 
+**首次启动 ADHD Coder 时会弹出引导窗口**,点「安装 hook」即可,会自动：
+- 把上报脚本写到 `~/.adhd-coder/report.py`
+- 往 `~/.claude/settings.json` 注册 `UserPromptSubmit` + `Stop` 两个 hook,分别对应「开始响应」和「响应完成」上报
+
+需要重装或在新机器上手动操作时,可走脚本（开发者用途）：
+
 ```bash
 bash scripts/install-claude-hook.sh
 ```
 
-会做两件事：
-- 把 `scripts/adhd-report.py` 复制到 `~/.adhd-coder/report.py`
-- 往 `~/.claude/settings.json` 写入 `UserPromptSubmit` + `Stop` 两个 hook，分别对应「开始响应」和「响应完成」上报
-
-幂等：重复跑会覆盖旧版本。
+幂等：重复跑会覆盖旧版本。也可在托盘菜单选「重新运行引导」回到引导窗。
 
 ### Codex CLI / 任意命令
 
@@ -134,7 +147,7 @@ curl -X POST http://127.0.0.1:7777/done \
 
 ## 端口
 
-固定 `127.0.0.1:7777`。被占用时启动失败，终端会打日志，不阻断窗口。
+默认 `127.0.0.1:7777`。被占用时按序回退 7778 → 7779 → 7780，实际端口写到 `~/.adhd-coder/port`，`report.py` 和 `adhd-wrap` 会自动读取。四个都被占才放弃监听（窗口仍可用，只是不再接收上报）。
 
 ## 数据
 
@@ -145,4 +158,3 @@ curl -X POST http://127.0.0.1:7777/done \
 - Codex Desktop 接入（macOS 通知拦截 / 窗口标题轮询）
 - 浏览器扩展（claude.ai / chatgpt.com / aistudio）
 - VSCode/Cursor 扩展：精确聚焦到具体 terminal pane（需要扩展进程响应 IPC）
-- 端口可配置 / 冲突自动回退

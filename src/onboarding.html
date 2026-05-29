@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ADHD Coder · 首次设置</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="ob">
+    <header class="bar">
+      <div class="drag" data-tauri-drag-region>
+        <span class="brand">🧠 ADHD Coder · 首次设置</span>
+      </div>
+      <button class="icon" id="skip" title="跳过,稍后可从托盘重新打开">—</button>
+    </header>
+
+    <main class="ob-body">
+      <p class="ob-intro">三步完成接入。Claude Code 跑完一轮就会出现在主窗口里。</p>
+
+      <section class="step" data-step="1">
+        <div class="step-head">
+          <span class="step-num" id="num-1">1</span>
+          <span class="step-title">安装 Claude Code hook</span>
+        </div>
+        <p class="step-desc">
+          把上报脚本写到 <code>~/.adhd-coder/report.py</code>,并在
+          <code>~/.claude/settings.json</code> 注册 UserPromptSubmit / Stop。
+        </p>
+        <button class="step-btn" id="btn-1">安装 hook</button>
+        <p class="step-err" id="err-1" hidden></p>
+      </section>
+
+      <section class="step" data-step="2">
+        <div class="step-head">
+          <span class="step-num" id="num-2">2</span>
+          <span class="step-title">授权辅助功能 <span class="optional">(可选)</span></span>
+        </div>
+        <p class="step-desc">
+          点击任务跳回源终端需要这个权限。会打开系统设置,把 ADHD Coder 勾上即可。
+        </p>
+        <button class="step-btn" id="btn-2">打开系统设置</button>
+      </section>
+
+      <section class="step" data-step="3">
+        <div class="step-head">
+          <span class="step-num" id="num-3">3</span>
+          <span class="step-title">完成</span>
+        </div>
+        <p class="step-desc">标记完成并打开主窗口。</p>
+        <button class="step-btn primary" id="btn-3" disabled>完成</button>
+      </section>
+    </main>
+
+    <script type="module" src="./onboarding.js"></script>
+  </body>
+</html>

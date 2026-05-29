@@ -686,6 +686,16 @@ pub fn run() {
         .setup(|app| {
             start_http_server(app.handle().clone());
             build_tray(app.handle())?;
+
+            if !get_install_status().installed {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+                if let Some(w) = app.get_webview_window("onboarding") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

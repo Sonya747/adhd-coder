@@ -27,6 +27,20 @@
         "shadow": true,
         "x": 1200,
         "y": 80
+      },
+      {
+        "label": "onboarding",
+        "url": "onboarding.html",
+        "title": "ADHD Coder · 首次设置",
+        "width": 480,
+        "height": 560,
+        "visible": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "shadow": true,
+        "center": true
       }
     ],
     "security": { "csp": null }
