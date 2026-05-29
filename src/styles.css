@@ -19,6 +19,19 @@ body {
   backdrop-filter: blur(20px);
 }
 
+/* ===== Scrollbar (frosted dark, matches the rest) ===== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:active { background: rgba(255, 255, 255, 0.32); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
 .bar {
   display: flex;
   align-items: center;
